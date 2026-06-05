@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  background: #f7f4ee;
+  color: #17202a;
+}
+
+.dark body {
+  background: #12161b;
+  color: #f4f0e8;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+.focus-ring {
+  @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-mint focus-visible:ring-offset-2 focus-visible:ring-offset-paper;
+}
+
+.surface {
+  @apply border border-black/10 bg-white/80 shadow-soft backdrop-blur;
+}
+
+.assistant-bubble {
+  background-color: #ffffff;
+  color: #17202a;
+}
+
+.dark .surface {
+  border-color: rgb(255 255 255 / 0.1);
+  background-color: rgb(255 255 255 / 0.08);
+}
+
+.dark .assistant-bubble {
+  background-color: #202832;
+  color: #f4f0e8;
+}
+
+.dark .bg-white {
+  background-color: #1b222a;
+}
+
+.dark .hover\:bg-paper:hover {
+  background-color: #141a20;
+}
+
+.dark .bg-paper,
+.dark .bg-paper\/60 {
+  background-color: #141a20;
+}
+
+.dark .text-black\/55,
+.dark .text-black\/58,
+.dark .text-black\/60,
+.dark .text-black\/65,
+.dark .text-black\/70,
+.dark .text-black\/50,
+.dark .text-black\/45 {
+  color: rgb(244 240 232 / 0.62);
+}
+
+.dark .border-black\/10,
+.dark .border-black\/15,
+.dark .border-black\/5 {
+  border-color: rgb(255 255 255 / 0.12);
+}
+
+.dark input,
+.dark textarea,
+.dark select {
+  background-color: #1b222a;
+  color: #f4f0e8;
+}
