@@ -22,7 +22,8 @@ import {
   Sun,
   Trash2,
   UploadCloud,
-  Upload
+  Upload,
+  UserCircle
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
@@ -216,6 +217,7 @@ export default function Home() {
             <NavButton tab="library" active={tab} setTab={setTab} icon={<Database />} label="词库" />
             <NavButton tab="plan" active={tab} setTab={setTab} icon={<CalendarDays />} label="学习计划" />
             <NavButton tab="settings" active={tab} setTab={setTab} icon={<Settings />} label="AI 设置" />
+            <AccountLink />
             <AdminLink />
           </nav>
           <div className="mt-auto px-3 pb-2">
@@ -240,6 +242,13 @@ export default function Home() {
                   {tabLabel(item)}
                 </button>
               ))}
+              <a
+                href="/settings/account"
+                className="focus-ring inline-flex shrink-0 items-center gap-2 rounded-md bg-paper px-3 py-2 text-sm"
+              >
+                <UserCircle className="h-4 w-4" />
+                账号
+              </a>
               <a
                 href="/admin/allowed-users"
                 className="focus-ring inline-flex shrink-0 items-center gap-2 rounded-md bg-paper px-3 py-2 text-sm"
@@ -570,6 +579,18 @@ function AdminLink() {
     >
       <ShieldCheck className="h-4 w-4" />
       白名单管理
+    </a>
+  );
+}
+
+function AccountLink() {
+  return (
+    <a
+      href="/settings/account"
+      className="focus-ring flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-black/65 hover:bg-paper"
+    >
+      <UserCircle className="h-4 w-4" />
+      账号管理
     </a>
   );
 }

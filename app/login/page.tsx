@@ -140,6 +140,11 @@ export default function LoginPage() {
         </form>
 
         <div className="mt-4 grid gap-3">
+          <div className="text-right">
+            <Link href="/reset-password" className="text-sm font-medium text-ink underline underline-offset-4">
+              忘记密码？
+            </Link>
+          </div>
           <button
             type="button"
             onClick={handleMagicLink}
