@@ -530,10 +530,23 @@ function isInvalidOutputPrompt(promptCn: string, targetWords: string[]) {
   return targetWords.some((word) => word && lower.includes(word.toLowerCase()));
 }
 
-export async function generateReadingPrompt(words: string[], config = getServerAIConfig("output"), length: "sentence" | "paragraph" = "paragraph") {
-  const targetWords = words.slice(0, 10);
-  const maxWords = length === "paragraph" ? 5 : 2;
+export async function generateReadingPrompt(
+  words: string[],
+  config = getServerAIConfig("output"),
+  length: "sentence" | "paragraph" = "paragraph",
+  options: {
+    targetCount?: number;
+    difficulty?: string;
+    recentPrompts?: string[];
+    attempt?: number;
+  } = {}
+) {
+  const requestedCount = Math.max(1, Math.min(10, options.targetCount ?? (length === "paragraph" ? 5 : 2), words.length));
+  const targetWords = words.slice(0, requestedCount);
+  const maxWords = requestedCount;
   const variation = randomPracticeVariation();
+  const levelLabel = outputDifficultyLabel(options.difficulty);
+  const recentPrompts = (options.recentPrompts ?? []).slice(0, 10).map((item, index) => `${index + 1}. ${item}`).join("\n");
   const fallback: ReadingPrompt = {
     title: "Context Reading",
     passage: "",
@@ -549,17 +562,20 @@ export async function generateReadingPrompt(words: string[], config = getServerA
       {
         role: "system",
         content:
-          "你是英语英译中训练出题助手。只返回 JSON object。用用户今日词生成自然英文句子或短文，让用户翻译成中文。内容要像真实阅读材料或真实表达，说人话，逻辑自然。自然优先，不要为了覆盖词汇而硬塞词。"
+          "你是英语英译中训练出题助手。只返回 JSON object。用给定目标词生成自然英文句子或短文，让用户翻译成中文。内容要像真实阅读材料或真实表达，说人话，逻辑自然。自然优先，不要为了覆盖词汇而硬塞词。不要生成阅读理解问题，不要出选择题。"
       },
       {
         role: "user",
         content:
-          `可选今日词：${targetWords.join(", ")}\n` +
-          `题型：${length === "paragraph" ? "英文短文，80 到 120 词" : "英文单句或两句"}。\n` +
+          `本次目标词：${targetWords.join(", ")}\n` +
+          `目标词数：尽量自然使用 ${requestedCount} 个词。\n` +
+          `题型：${length === "paragraph" || requestedCount >= 5 ? "英文短文，60 到 120 词" : requestedCount >= 3 ? "英文一到两句" : "英文单句"}。\n` +
+          `难度/场景：${levelLabel}。\n` +
           `本次随机语境：${variation}。\n` +
-          `随机编号：${crypto.randomUUID()}。\n` +
-          "不要复用上一次的句子结构、人物、场景或表达方式。\n" +
-          `请只选择适合放在同一语境里的 ${length === "paragraph" ? "3 到 5" : "1 到 2"} 个词，最多 ${maxWords} 个。不要把不相关的词硬凑在一起。\n` +
+          `随机编号：${crypto.randomUUID()}-${options.attempt ?? 0}。\n` +
+          (recentPrompts ? `最近生成过的英文题目，请避开这些表达、人物、场景和句式：\n${recentPrompts}\n` : "") +
+          "不要复用上一次的句子结构、人物、场景或表达方式。不要生成问答题、阅读理解题、选择题或作文题。\n" +
+          `请只选择适合放在同一语境里的词，最多 ${maxWords} 个。不要把不相关的词硬凑在一起。\n` +
           "生成 JSON：title, passage, targetWords, difficulty。targetWords 只放 passage 里实际自然使用到的词。difficulty 用 easy/medium/hard。"
       }
     ]

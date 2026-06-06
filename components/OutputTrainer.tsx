@@ -193,6 +193,15 @@ export function OutputTrainer({
     }
   }
 
+  function clearCurrentQuestion() {
+    setPrompt(null);
+    setAnswer("");
+    setGrade(null);
+    setError("");
+    setNotice("");
+    setCurrentHistoryId(null);
+  }
+
   return (
     <div className="surface rounded-lg p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -276,7 +285,15 @@ export function OutputTrainer({
             placeholder="写下你的英文翻译"
           />
           <button type="button" onClick={submit} disabled={loading} className="focus-ring mt-3 rounded-md bg-mint px-4 py-2 text-sm font-medium text-white">
-            提交批改
+            提交
+          </button>
+          <button
+            type="button"
+            onClick={clearCurrentQuestion}
+            disabled={loading}
+            className="focus-ring ml-2 mt-3 rounded-md border border-black/10 px-4 py-2 text-sm"
+          >
+            清除本题
           </button>
         </div>
       ) : null}
@@ -325,6 +342,13 @@ export function OutputTrainer({
             className="focus-ring rounded-md border border-black/10 px-4 py-2 text-sm"
           >
             再写一次
+          </button>
+          <button
+            type="button"
+            onClick={clearCurrentQuestion}
+            className="focus-ring rounded-md border border-black/10 px-4 py-2 text-sm text-coral"
+          >
+            清除本题
           </button>
         </div>
       ) : null}

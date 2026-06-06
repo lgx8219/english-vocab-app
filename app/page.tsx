@@ -716,7 +716,7 @@ export default function Home() {
             <PageShell title="AI 翻译训练" subtitle="围绕今日词生成中译英或英译中题目，提交后由 AI 批改并给建议。">
               <div className="space-y-4">
                 <OutputTrainer words={store.words} todayWords={store.todayWords} onUpdate={store.updateWord} onStats={(i, o) => store.bumpStats("grade", i, o)} />
-                <ReadingTranslationTrainer words={store.todayWords} onStats={(i, o) => store.bumpStats("grade", i, o)} />
+                <ReadingTranslationTrainer words={store.words} todayWords={store.todayWords} onStats={(i, o) => store.bumpStats("grade", i, o)} />
               </div>
             </PageShell>
           ) : null}
