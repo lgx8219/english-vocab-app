@@ -77,28 +77,42 @@ export function useLocalStudyStore() {
   }, []);
 
   useEffect(() => {
-    if (hydrated) localStorage.setItem(WORDS_KEY, JSON.stringify(words));
+    if (hydrated) writeJson(WORDS_KEY, words);
   }, [words, hydrated]);
 
   useEffect(() => {
-    if (hydrated) localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    if (hydrated) writeJson(SETTINGS_KEY, settings);
   }, [settings, hydrated]);
 
   useEffect(() => {
-    if (hydrated) localStorage.setItem(STATS_KEY, JSON.stringify(stats));
+    if (hydrated) writeJson(STATS_KEY, stats);
   }, [stats, hydrated]);
 
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem(THEME_KEY, JSON.stringify(theme));
+    writeJson(THEME_KEY, theme);
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const applyTheme = () => {
       const dark = theme === "dark" || (theme === "system" && media.matches);
       document.documentElement.classList.toggle("dark", dark);
     };
     applyTheme();
-    media.addEventListener("change", applyTheme);
-    return () => media.removeEventListener("change", applyTheme);
+    const legacyMedia = media as MediaQueryList & {
+      addListener?: (listener: () => void) => void;
+      removeListener?: (listener: () => void) => void;
+    };
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", applyTheme);
+    } else {
+      legacyMedia.addListener?.(applyTheme);
+    }
+    return () => {
+      if (typeof media.removeEventListener === "function") {
+        media.removeEventListener("change", applyTheme);
+      } else {
+        legacyMedia.removeListener?.(applyTheme);
+      }
+    };
   }, [theme, hydrated]);
 
   const todayWords = useMemo(() => {
@@ -299,6 +313,14 @@ function readJson<T>(key: string, fallback: T): T {
     return raw ? (JSON.parse(raw) as T) : fallback;
   } catch {
     return fallback;
+  }
+}
+
+function writeJson(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Some browsers can block localStorage; the app should still render.
   }
 }
 

@@ -22,11 +22,24 @@ export function useThemeMode() {
     };
 
     applyTheme();
-    media.addEventListener("change", applyTheme);
+    const legacyMedia = media as MediaQueryList & {
+      addListener?: (listener: () => void) => void;
+      removeListener?: (listener: () => void) => void;
+    };
+
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", applyTheme);
+    } else {
+      legacyMedia.addListener?.(applyTheme);
+    }
     window.addEventListener("storage", applyTheme);
 
     return () => {
-      media.removeEventListener("change", applyTheme);
+      if (typeof media.removeEventListener === "function") {
+        media.removeEventListener("change", applyTheme);
+      } else {
+        legacyMedia.removeListener?.(applyTheme);
+      }
       window.removeEventListener("storage", applyTheme);
     };
   }, []);

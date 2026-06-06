@@ -1,5 +1,6 @@
 import { outputGradeSchema, outputPromptSchema, wordCardSchema } from "@/lib/ai/schemas";
 import { mockCard, mockGrade, mockOutputPrompt } from "@/lib/ai/mock";
+import { extractEnglishWords } from "@/lib/text/word-extract";
 import type { AIProvider, OutputGrade, OutputPrompt, TokenMode } from "@/lib/types";
 
 type AIConfig = {
@@ -17,7 +18,7 @@ type ChatMessage = {
 };
 
 type ExtractedWords = {
-  items: Array<{ word: string; meaningCn?: string | null }>;
+  items: Array<{ word: string; count?: number; meaningCn?: string | null }>;
   rawText: string;
   warnings: string[];
 };
@@ -300,14 +301,7 @@ export async function extractWordsFromImage({
   }
 
   if (config.provider !== "openai") {
-    const data = {
-      ...fallback,
-      warnings: ["当前图片识别先使用 OpenAI 视觉模型；DeepSeek 配置下请改用文本/CSV 上传。"]
-    };
-    return {
-      data,
-      meta: { inputTokens, outputTokens: estimateTokens(JSON.stringify(data)), mocked: true }
-    };
+    throw new Error("当前 DeepSeek 模型暂不支持图片 OCR，请切换到支持视觉识别的模型，或使用 OpenAI 视觉模型。");
   }
 
   const response = await fetch(endpointFor(config.provider), {
@@ -319,20 +313,18 @@ export async function extractWordsFromImage({
     body: JSON.stringify({
       model: config.model,
       temperature: 0.1,
-      response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
           content:
-            "你是图片 OCR 和英语词表整理助手。只返回 JSON。只提取图片中明确出现的英语单词或 word-中文释义词表，不要猜测。"
+            "你是 OCR 引擎。请从图片中提取所有可见英文文字。只返回图片中的原文，不要翻译，不要解释，不要补充图片中不存在的内容。保留英文单词、短语和句子。如果图片中没有英文文字，返回空字符串。"
         },
         {
           role: "user",
           content: [
             {
               type: "text",
-              text:
-                "从图片中识别英语单词。返回 JSON：{\"items\":[{\"word\":\"maintain\",\"meaningCn\":\"维持\"}],\"rawText\":\"识别到的原文\",\"warnings\":[]}。如果没有中文释义，meaningCn 为 null。去重，忽略页码、标题装饰、纯中文和无关符号。"
+              text: "请提取这张图片中的所有可见英文原文。"
             },
             {
               type: "image_url",
@@ -356,16 +348,17 @@ export async function extractWordsFromImage({
     throw new Error("AI returned empty image OCR content");
   }
 
-  const data = JSON.parse(content) as ExtractedWords;
+  const rawText = content.trim();
+  const items = extractEnglishWords(rawText);
   return {
     data: {
-      items: Array.isArray(data.items) ? data.items : [],
-      rawText: data.rawText ?? "",
-      warnings: Array.isArray(data.warnings) ? data.warnings : []
+      items,
+      rawText,
+      warnings: items.length === 0 ? ["没有在图片中识别到英文单词。"] : []
     },
     meta: {
       inputTokens: payload.usage?.prompt_tokens ?? inputTokens,
-      outputTokens: payload.usage?.completion_tokens ?? estimateTokens(content),
+      outputTokens: payload.usage?.completion_tokens ?? estimateTokens(rawText),
       mocked: false
     }
   };

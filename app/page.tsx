@@ -49,6 +49,7 @@ export default function Home() {
   const [fileStatus, setFileStatus] = useState<string>("");
   const [imageStatus, setImageStatus] = useState<string>("");
   const [imageLoading, setImageLoading] = useState(false);
+  const [ocrPreview, setOcrPreview] = useState("");
   const [backupStatus, setBackupStatus] = useState<string>("");
   const [importMode, setImportMode] = useState<ImportMode>("merge");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -81,6 +82,7 @@ export default function Home() {
 
   async function handleTextFile(file?: File) {
     if (!file) return;
+    setOcrPreview("");
     setFileStatus(`正在解析 ${file.name}...`);
     try {
       if (/\.(txt|csv|md)$/i.test(file.name)) {
@@ -104,8 +106,20 @@ export default function Home() {
         setFileStatus(json.error ?? "文件解析失败。");
         return;
       }
-      setInput((current) => mergeInput(current, (json.words ?? []).join("\n")));
-      setFileStatus(`已从 ${file.name} 识别 ${json.words?.length ?? 0} 个英文单词。`);
+      if (json.needsOcr) {
+        const wantsOcr = window.confirm(json.message ?? "这个文件可能需要使用 OCR 识别，这会消耗 AI 额度。");
+        if (!wantsOcr) {
+          setFileStatus("已取消 OCR 识别。");
+          return;
+        }
+        setFileStatus(json.error ?? "扫描版 PDF OCR 第一版暂不支持自动转图片。请先拆分或截图为图片后上传 OCR。");
+        return;
+      }
+
+      const words = normalizeExtractedWords(json.words);
+      setOcrPreview(json.rawTextPreview ?? "");
+      setInput((current) => mergeInput(current, words.join("\n")));
+      setFileStatus(`已从 ${file.name} 识别 ${words.length} 个英文单词。`);
     } catch {
       setFileStatus("文件解析失败，请换一个文件试试。");
     }
@@ -117,8 +131,18 @@ export default function Home() {
       setImageStatus("请选择图片文件。");
       return;
     }
+    if (file.size > 5 * 1024 * 1024) {
+      setImageStatus("图片最大 5MB，请压缩后再上传。");
+      return;
+    }
+    const confirmed = window.confirm("图片 OCR 会消耗 AI API 额度。确定开始识别图片文字吗？");
+    if (!confirmed) {
+      setImageStatus("已取消图片 OCR。");
+      return;
+    }
+    setOcrPreview("");
     setImageLoading(true);
-    setImageStatus("正在识别图片里的单词...");
+    setImageStatus("正在识别图片文字...");
     try {
       const imageDataUrl = await readFileAsDataUrl(file);
       const response = await fetch("/api/ai/extract-words-from-image", {
@@ -132,16 +156,14 @@ export default function Home() {
         return;
       }
 
-      const extracted = (json.data?.items ?? [])
-        .map((item: { word: string; meaningCn?: string | null }) =>
-          item.meaningCn ? `${item.word} - ${item.meaningCn}` : item.word
-        )
-        .join("\n");
+      const words = normalizeExtractedWords(json.data?.items);
+      const extracted = words.join("\n");
 
       store.bumpStats("image", json.meta?.inputTokens, json.meta?.outputTokens);
+      setOcrPreview(json.data?.rawText ?? "");
 
       if (!extracted) {
-        setImageStatus(json.data?.warnings?.[0] ?? "没有从图片中识别到明确的英语单词。");
+        setImageStatus(json.data?.warnings?.[0] ?? "没有在图片中识别到英文单词。");
         return;
       }
 
@@ -149,7 +171,7 @@ export default function Home() {
       const warning = json.data?.warnings?.length ? ` ${json.data.warnings[0]}` : "";
       setImageStatus(`已从 ${file.name} 识别 ${json.data.items.length} 个词，已加入下方编辑区。${warning}`);
     } catch {
-      setImageStatus("图片识别失败，请确认已配置支持视觉识别的 OpenAI 模型。");
+      setImageStatus("图片文字识别失败，请换一张更清晰的图片，或确认当前 AI 模型支持视觉识别。");
     } finally {
       setImageLoading(false);
     }
@@ -285,7 +307,7 @@ export default function Home() {
           ) : null}
 
           {tab === "upload" ? (
-            <PageShell title="上传单词" subtitle="支持手动粘贴、文本/CSV 文件和图片识别。">
+            <PageShell title="上传单词" subtitle="支持手动粘贴、文本文件、可复制 PDF 和图片 OCR。">
               <div className="grid gap-4 lg:grid-cols-2">
                 <label className="surface block rounded-lg p-5">
                   <div className="flex items-center gap-3">
@@ -294,7 +316,7 @@ export default function Home() {
                     </span>
                     <div>
                       <h2 className="font-semibold">上传文本文件</h2>
-                      <p className="text-sm text-black/55">支持 .txt / .csv / .md</p>
+                      <p className="text-sm text-black/55">支持 .txt / .csv / .md / .docx / 可复制文字 PDF</p>
                     </div>
                   </div>
                     <input
@@ -306,25 +328,28 @@ export default function Home() {
                   {fileStatus ? <p className="mt-3 text-sm text-mint">{fileStatus}</p> : null}
                 </label>
 
-                <label className="surface block rounded-lg p-5">
+                <section className="surface block rounded-lg p-5">
                   <div className="flex items-center gap-3">
                     <span className="grid h-10 w-10 place-items-center rounded-md bg-mint text-white">
                       <ImagePlus className="h-5 w-5" />
                     </span>
                     <div>
                       <h2 className="font-semibold">上传图片识别</h2>
-                      <p className="text-sm text-black/55">图片会发到本站后端，再由 AI 识别</p>
+                      <p className="text-sm text-black/55">图片 OCR 会消耗 AI API 额度。</p>
                     </div>
                   </div>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    disabled={imageLoading}
-                    onChange={(event) => handleImageFile(event.target.files?.[0])}
-                    className="mt-4 block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-paper file:px-3 file:py-2 file:text-sm file:font-medium disabled:opacity-60"
-                  />
+                  <label className={`focus-ring mt-4 inline-flex cursor-pointer items-center gap-2 rounded-md bg-ink px-4 py-2 text-sm font-medium text-white ${imageLoading ? "pointer-events-none opacity-60" : ""}`}>
+                    开始识别图片文字
+                    <input
+                      type="file"
+                      accept="image/*"
+                      disabled={imageLoading}
+                      onChange={(event) => handleImageFile(event.target.files?.[0])}
+                      className="sr-only"
+                    />
+                  </label>
                   {imageStatus ? <p className={`mt-3 text-sm ${imageStatus.includes("失败") || imageStatus.includes("没有") ? "text-coral" : "text-mint"}`}>{imageStatus}</p> : null}
-                </label>
+                </section>
 
               </div>
 
@@ -340,6 +365,12 @@ export default function Home() {
                   onChange={(event) => setInput(event.target.value)}
                   className="focus-ring min-h-72 w-full resize-y rounded-md border border-black/15 bg-white px-3 py-3 text-sm leading-6"
                 />
+                {ocrPreview ? (
+                  <details className="mt-3 rounded-md bg-paper p-3 text-sm">
+                    <summary className="cursor-pointer font-medium">识别文本预览</summary>
+                    <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-xs leading-5 text-black/65">{ocrPreview}</pre>
+                  </details>
+                ) : null}
                 <div className="mt-4 flex flex-wrap items-center gap-3">
                   <button type="button" onClick={handleUpload} className="focus-ring rounded-md bg-ink px-4 py-2 text-sm font-medium text-white">
                     上传并进入今日任务
@@ -593,6 +624,18 @@ function AccountLink() {
       账号管理
     </a>
   );
+}
+
+function normalizeExtractedWords(items: unknown): string[] {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => {
+      if (typeof item === "string") return item;
+      if (item && typeof item === "object" && "word" in item && typeof item.word === "string") return item.word;
+      return "";
+    })
+    .map((word) => word.trim())
+    .filter(Boolean);
 }
 
 function Metric({ icon, label, value }: { icon: ReactNode; label: string; value: number }) {

@@ -1,6 +1,7 @@
 import { inflateRawSync } from "zlib";
 import { NextResponse } from "next/server";
 import { requireAllowedUser } from "@/lib/auth/api";
+import { extractEnglishWords, isUsableExtractedText } from "@/lib/text/word-extract";
 
 const maxFileBytes = 8 * 1024 * 1024;
 
@@ -19,31 +20,36 @@ export async function POST(request: Request) {
   }
 
   const name = typeof fileName === "string" ? fileName.toLowerCase() : "";
+  const type = typeof mimeType === "string" ? mimeType : "";
   let text = "";
+
+  if (type.startsWith("image/") || /\.(jpe?g|png|webp)$/i.test(name)) {
+    return NextResponse.json(
+      { needsOcr: true, error: "图片文件需要使用 OCR 识别，不能当作普通文本解析。" },
+      { status: 400 }
+    );
+  }
 
   if (name.endsWith(".docx") || mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
     text = extractDocxText(buffer);
   } else if (name.endsWith(".pdf") || mimeType === "application/pdf") {
     text = extractPdfText(buffer);
+    if (!isUsableExtractedText(text)) {
+      return NextResponse.json({
+        needsOcr: true,
+        words: [],
+        rawTextPreview: "",
+        message: "这个 PDF 没有可复制文字，可能是扫描版。是否使用 OCR 识别？这会消耗 AI 额度。",
+        ocrSupported: false,
+        error: "扫描版 PDF OCR 第一版暂不支持自动转图片。请先拆分或截图为图片后上传 OCR。"
+      });
+    }
   } else {
     text = buffer.toString("utf8");
   }
 
   const words = extractEnglishWords(text);
-  return NextResponse.json({ words, rawTextLength: text.length });
-}
-
-function extractEnglishWords(text: string) {
-  const ignored = new Set(["the", "and", "you", "your", "are", "was", "were", "that", "this", "with", "from"]);
-  const seen = new Set<string>();
-  return Array.from(text.matchAll(/[A-Za-z][A-Za-z'-]{1,}/g))
-    .map((match) => match[0].replace(/^[-']+|[-']+$/g, "").toLowerCase())
-    .filter((word) => word.length > 1 && !ignored.has(word))
-    .filter((word) => {
-      if (seen.has(word)) return false;
-      seen.add(word);
-      return true;
-    });
+  return NextResponse.json({ words, rawTextLength: text.length, rawTextPreview: text.slice(0, 800) });
 }
 
 function extractDocxText(buffer: Buffer) {
