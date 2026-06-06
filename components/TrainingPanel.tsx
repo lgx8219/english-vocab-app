@@ -3,7 +3,6 @@
 import { Check, Lightbulb, RotateCcw, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { StudyWord } from "@/lib/types";
-import { updateAfterAnswer } from "@/lib/study";
 
 type Round = "recognition" | "recall" | "spelling" | "done";
 
@@ -19,6 +18,7 @@ export function TrainingPanel({
   const [round, setRound] = useState<Round>("recognition");
   const [answer, setAnswer] = useState("");
   const [usedHint, setUsedHint] = useState(false);
+  const [hintLevel, setHintLevel] = useState(0);
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
   const [weakIds, setWeakIds] = useState<string[]>([]);
   const current = trainable[index];
@@ -43,15 +43,12 @@ export function TrainingPanel({
   }
 
   if (round === "done") {
-    const mastered = trainable.filter((item) => item.masteryScore >= 80).length;
-    const basic = trainable.filter((item) => item.masteryScore >= 50 && item.masteryScore < 80).length;
     return (
       <div className="surface rounded-lg p-5">
         <h2 className="text-xl font-semibold">今日训练总结</h2>
-        <div className="mt-4 grid gap-3 sm:grid-cols-4">
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
           <Metric label="今日词数" value={trainable.length} />
-          <Metric label="已掌握" value={mastered} />
-          <Metric label="基本掌握" value={basic} />
+          <Metric label="完成轮次" value={3} />
           <Metric label="不熟池" value={weakIds.length} />
         </div>
         <button
@@ -61,6 +58,7 @@ export function TrainingPanel({
             setRound("recognition");
             setWeakIds([]);
             setFeedback(null);
+            setHintLevel(0);
           }}
           className="focus-ring mt-5 inline-flex items-center gap-2 rounded-md bg-ink px-4 py-2 text-sm font-medium text-white"
         >
@@ -72,6 +70,12 @@ export function TrainingPanel({
   }
 
   const meaning = current.card?.meanings[0]?.meaningCn ?? current.userMeaning ?? "";
+  const title =
+    round === "recognition"
+      ? current.word
+      : round === "recall"
+        ? "根据中文回忆英文"
+        : "根据中文拼写英文";
   const prompt =
     round === "recognition"
       ? "英文识别中文"
@@ -81,7 +85,7 @@ export function TrainingPanel({
 
   function submitRecognition(option: string) {
     const correct = option === meaning;
-    finish(correct, correct ? "答对了，英文识别已记录。" : `这题应选：${meaning}`, "meaning_error", option);
+    finish(correct, correct ? "答对了。" : `这题应选：${meaning}`, option);
   }
 
   function submitTyped() {
@@ -96,14 +100,19 @@ export function TrainingPanel({
         : close
           ? `很接近，正确拼写是 ${current.word}。`
           : `正确答案是 ${current.word}。`,
-      round === "spelling" ? "spelling_error" : "recall_error",
       answer
     );
   }
 
-  function finish(ok: boolean, text: string, errorType: "meaning_error" | "recall_error" | "spelling_error", originalAnswer?: string) {
-    const updated = updateAfterAnswer(current, round === "done" ? "recognition" : round, ok, usedHint, errorType, originalAnswer);
-    onUpdate(updated);
+  function showAnswer() {
+    const text = round === "recognition" ? `答案：${meaning}` : `答案：${current.word}`;
+    setUsedHint(true);
+    setWeakIds((ids) => Array.from(new Set([...ids, current.id])));
+    setFeedback({ ok: false, text });
+  }
+
+  function finish(ok: boolean, text: string, originalAnswer?: string) {
+    void originalAnswer;
     if (!ok || usedHint) setWeakIds((ids) => Array.from(new Set([...ids, current.id])));
     setFeedback({ ok, text });
   }
@@ -111,6 +120,7 @@ export function TrainingPanel({
   function next() {
     setAnswer("");
     setUsedHint(false);
+    setHintLevel(0);
     setFeedback(null);
     if (index < trainable.length - 1) {
       setIndex(index + 1);
@@ -140,7 +150,7 @@ export function TrainingPanel({
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.18em] text-black/45">{prompt}</p>
-          <h2 className="mt-1 text-2xl font-semibold">{current.word}</h2>
+          <h2 className="mt-1 text-2xl font-semibold">{title}</h2>
         </div>
         <div className="rounded-md border border-black/10 px-3 py-2 text-sm">
           {index + 1}/{trainable.length}
@@ -148,18 +158,28 @@ export function TrainingPanel({
       </div>
 
       {round === "recognition" ? (
-        <div className="grid gap-2 sm:grid-cols-2">
-          {options.map((option) => (
-            <button
-              key={option}
-              type="button"
-              disabled={Boolean(feedback)}
-              onClick={() => submitRecognition(option)}
-              className="focus-ring min-h-14 rounded-md border border-black/10 bg-white px-4 py-3 text-left text-sm hover:border-mint disabled:opacity-70"
-            >
-              {option}
-            </button>
-          ))}
+        <div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {options.map((option) => (
+              <button
+                key={option}
+                type="button"
+                disabled={Boolean(feedback)}
+                onClick={() => submitRecognition(option)}
+                className="focus-ring min-h-14 rounded-md border border-black/10 bg-white px-4 py-3 text-left text-sm hover:border-mint disabled:opacity-70"
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={showAnswer}
+            disabled={Boolean(feedback)}
+            className="focus-ring mt-3 rounded-md border border-black/10 px-3 py-2 text-sm disabled:opacity-60"
+          >
+            直接显示答案
+          </button>
         </div>
       ) : (
         <div>
@@ -186,14 +206,33 @@ export function TrainingPanel({
           <div className="mt-3 flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() => setUsedHint(true)}
+              onClick={showAnswer}
+              disabled={Boolean(feedback)}
+              className="focus-ring rounded-md border border-black/10 px-3 py-2 text-sm disabled:opacity-60"
+            >
+              直接显示答案
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setUsedHint(true);
+                setHintLevel((value) => Math.min(3, value + 1));
+              }}
+              disabled={Boolean(feedback) || hintLevel >= 3}
               className="focus-ring inline-flex items-center gap-2 rounded-md border border-black/10 px-3 py-2 text-sm"
             >
               <Lightbulb className="h-4 w-4" />
-              首字母 {current.word[0]} · {current.word.length} 个字母
+              {hintLevel === 0 ? "显示提示" : hintLevel < 3 ? "再给一点提示" : "提示已用完"}
             </button>
-            {usedHint ? <span className="py-2 text-xs text-coral">已使用提示，本题加分会降低。</span> : null}
+            {usedHint ? <span className="py-2 text-xs text-coral">已使用提示。</span> : null}
           </div>
+          {hintLevel > 0 ? (
+            <div className="mt-3 rounded-md bg-paper px-3 py-3 text-sm text-black/65">
+              {hintLevel >= 1 ? <p>首字母：{current.word[0]}</p> : null}
+              {hintLevel >= 2 ? <p className="mt-1">长度：{current.word.replace(/\s+/g, "").length} 个字母{current.word.includes(" ") ? "，包含空格" : ""}</p> : null}
+              {hintLevel >= 3 ? <p className="mt-1">例句空格：{blankExample(current)}</p> : null}
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -210,6 +249,13 @@ export function TrainingPanel({
       ) : null}
     </div>
   );
+}
+
+function blankExample(item: StudyWord) {
+  const sentence = item.card?.examples?.[0]?.sentence;
+  if (!sentence) return "暂无可用例句。";
+  const escaped = item.word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return sentence.replace(new RegExp(escaped, "ig"), "_____");
 }
 
 function Metric({ label, value }: { label: string; value: number }) {

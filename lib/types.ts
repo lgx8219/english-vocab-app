@@ -14,6 +14,8 @@ export type ExampleStyle = "daily" | "IELTS" | "postgraduate_exam" | "academic" 
 export type WordMeaning = {
   partOfSpeech: string;
   meaningCn: string;
+  meaningEn?: string;
+  usage?: string;
 };
 
 export type RootAffixAnalysis = {
@@ -50,10 +52,11 @@ export type WordCard = {
   phonetic?: string | null;
   partOfSpeech: string;
   meanings: WordMeaning[];
-  derivedWords: Array<{ word: string; meaningCn: string }>;
+  derivedWords: Array<{ word: string; pos?: string; meaningCn: string }>;
   collocations: string[];
   confusableWords: Array<{ word: string; noteCn: string }>;
   rootAffixAnalysis?: RootAffixAnalysis | null;
+  notes?: string;
   examples: WordExample[];
   createdAt: string;
   updatedAt: string;
@@ -73,6 +76,8 @@ export type StudyWord = {
   level: number;
   correctCount: number;
   wrongCount: number;
+  outputPracticeCount?: number;
+  lastOutputPracticedAt?: string | null;
   lastReviewedAt?: string | null;
   nextReviewAt?: string | null;
   errorHistory: Array<{
@@ -104,10 +109,38 @@ export type TokenStats = {
 };
 
 export type OutputPrompt = {
-  chinese: string;
+  promptCn: string;
+  chinese?: string;
+  targetWords: string[];
+  difficulty: "daily" | "postgraduate" | "ielts";
+  mode: "strict";
+  expectedUsage: Array<{
+    word: string;
+    meaningHintCn: string;
+  }>;
+};
+
+export type ReadingPrompt = {
+  title: string;
+  passage: string;
   targetWords: string[];
   difficulty: "easy" | "medium" | "hard";
-  mode: "strict";
+};
+
+export type TranslationGrade = {
+  score: number;
+  is_passed: boolean;
+  overall_feedback: string;
+  target_word_results: Array<{
+    word: string;
+    meaning_in_context: string;
+    user_translation_status: "correct" | "missing" | "incorrect" | "partial";
+    comment: string;
+  }>;
+  missing_meanings: string[];
+  serious_errors: string[];
+  improved_translation: string;
+  review_suggestions: string[];
 };
 
 export type OutputGrade = {

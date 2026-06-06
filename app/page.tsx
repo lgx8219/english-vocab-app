@@ -26,19 +26,49 @@ import {
   UserCircle
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { AISettingsPanel } from "@/components/AISettingsPanel";
 import { ChatWidget } from "@/components/ChatWidget";
 import { LogoutButton } from "@/components/LogoutButton";
 import { OutputTrainer } from "@/components/OutputTrainer";
+import { ReadingTranslationTrainer } from "@/components/ReadingTranslationTrainer";
 import { TrainingPanel } from "@/components/TrainingPanel";
 import { WordCardView } from "@/components/WordCardView";
 import { useLocalStudyStore } from "@/hooks/useLocalStudyStore";
 import type { ImportMode } from "@/hooks/useLocalStudyStore";
 import { useThemeMode } from "@/hooks/useThemeMode";
 import { duePriority, isDue } from "@/lib/study";
+import type { WordCard } from "@/lib/types";
 
 type Tab = "dashboard" | "upload" | "cards" | "train" | "output" | "library" | "plan" | "settings";
+type ExtractMode = "smart" | "fulltext";
+type UnsupportedPdfOcr = {
+  message: string;
+};
+type FilePreviewItem = {
+  id: string;
+  word: string;
+  selected: boolean;
+};
+type FileImportPreview = {
+  fileName: string;
+  mode: ExtractMode;
+  rawTextPreview: string;
+  items: FilePreviewItem[];
+};
+type BatchFailure = {
+  wordId: string;
+  word: string;
+  error: string;
+};
+type BatchProgress = {
+  total: number;
+  done: number;
+  success: number;
+  failed: number;
+  skipped: number;
+  current: string;
+};
 
 export default function Home() {
   useThemeMode();
@@ -50,10 +80,22 @@ export default function Home() {
   const [imageStatus, setImageStatus] = useState<string>("");
   const [imageLoading, setImageLoading] = useState(false);
   const [ocrPreview, setOcrPreview] = useState("");
+  const [unsupportedPdfOcr, setUnsupportedPdfOcr] = useState<UnsupportedPdfOcr | null>(null);
+  const [extractMode, setExtractMode] = useState<ExtractMode>("smart");
+  const [filePreview, setFilePreview] = useState<FileImportPreview | null>(null);
+  const [manualPreviewWord, setManualPreviewWord] = useState("");
   const [backupStatus, setBackupStatus] = useState<string>("");
   const [importMode, setImportMode] = useState<ImportMode>("merge");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedWordIds, setSelectedWordIds] = useState<string[]>([]);
+  const [batchOverwrite, setBatchOverwrite] = useState(false);
+  const [batchGenerating, setBatchGenerating] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
+  const [batchFailures, setBatchFailures] = useState<BatchFailure[]>([]);
+  const [generatingWordIds, setGeneratingWordIds] = useState<string[]>([]);
+  const [failedWordIds, setFailedWordIds] = useState<string[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedWord = useMemo(
     () => store.words.find((item) => item.id === selectedId) ?? store.todayWords[0],
@@ -64,9 +106,9 @@ export default function Home() {
   const wrongCount = store.words.filter((item) => item.errorHistory.length > 0).length;
   const generatedCards = store.words.filter((item) => item.card).length;
 
-  function handleUpload() {
-    const result = store.upload(input);
-    setUploadResult(`已解析 ${result.total} 个词，新增 ${result.added} 个，更新 ${result.reused} 个。`);
+  async function handleUpload() {
+    const result = await store.upload(input);
+    setUploadResult(`已解析 ${result.total} 个词，新增 ${result.added} 个，更新 ${result.reused} 个。已保存到词库。`);
     setTab("cards");
   }
 
@@ -83,22 +125,24 @@ export default function Home() {
   async function handleTextFile(file?: File) {
     if (!file) return;
     setOcrPreview("");
+    setUnsupportedPdfOcr(null);
+    setFilePreview(null);
     setFileStatus(`正在解析 ${file.name}...`);
     try {
-      if (/\.(txt|csv|md)$/i.test(file.name)) {
-        const text = await file.text();
-        setInput((current) => mergeInput(current, text));
-        setFileStatus(`已读取 ${file.name}，内容已加入下方编辑区，可检查后上传。`);
+      if (file.type.startsWith("image/") || /\.(jpe?g|png|webp)$/i.test(file.name)) {
+        setFileStatus("当前建议上传 Word、txt、csv 或可复制文字 PDF。扫描版 PDF / 图片识别可能不准确，暂不推荐用于词表导入。");
         return;
       }
 
+      const base64 = await readFileAsBase64(file);
       const response = await fetch("/api/files/extract-words", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           fileName: file.name,
           mimeType: file.type,
-          base64: await readFileAsBase64(file)
+          base64,
+          mode: extractMode
         })
       });
       const json = await response.json();
@@ -106,27 +150,84 @@ export default function Home() {
         setFileStatus(json.error ?? "文件解析失败。");
         return;
       }
-      if (json.needsOcr) {
-        const wantsOcr = window.confirm(json.message ?? "这个文件可能需要使用 OCR 识别，这会消耗 AI 额度。");
-        if (!wantsOcr) {
-          setFileStatus("已取消 OCR 识别。");
-          return;
-        }
-        setFileStatus(json.error ?? "扫描版 PDF OCR 第一版暂不支持自动转图片。请先拆分或截图为图片后上传 OCR。");
+      if (json.needsOcr || json.requiresOcr) {
+        setUnsupportedPdfOcr({
+          message: json.error ?? "这个 PDF 可能是扫描版，目前不建议直接导入。请上传 Word、txt、csv，或者使用可复制文字 PDF。"
+        });
+        setFileStatus("这个 PDF 可能是扫描版，当前不建议直接导入。");
         return;
       }
 
       const words = normalizeExtractedWords(json.words);
       setOcrPreview(json.rawTextPreview ?? "");
-      setInput((current) => mergeInput(current, words.join("\n")));
-      setFileStatus(`已从 ${file.name} 识别 ${words.length} 个英文单词。`);
+      setFilePreview({
+        fileName: file.name,
+        mode: json.mode ?? extractMode,
+        rawTextPreview: json.rawTextPreview ?? "",
+        items: words.map((word) => makePreviewItem(word))
+      });
+      setFileStatus(`已从 ${file.name} 解析出 ${words.length} 个词条，请先检查再确认加入。`);
     } catch {
       setFileStatus("文件解析失败，请换一个文件试试。");
     }
   }
 
+  function updatePreviewWord(id: string, word: string) {
+    setFilePreview((current) =>
+      current ? { ...current, items: current.items.map((item) => item.id === id ? { ...item, word } : item) } : current
+    );
+  }
+
+  function togglePreviewItem(id: string) {
+    setFilePreview((current) =>
+      current ? { ...current, items: current.items.map((item) => item.id === id ? { ...item, selected: !item.selected } : item) } : current
+    );
+  }
+
+  function setAllPreviewItems(selected: boolean) {
+    setFilePreview((current) => current ? { ...current, items: current.items.map((item) => ({ ...item, selected })) } : current);
+  }
+
+  function deleteSelectedPreviewItems() {
+    setFilePreview((current) => current ? { ...current, items: current.items.filter((item) => !item.selected) } : current);
+  }
+
+  function deletePreviewItem(id: string) {
+    setFilePreview((current) => current ? { ...current, items: current.items.filter((item) => item.id !== id) } : current);
+  }
+
+  function clearFilePreview() {
+    setFilePreview(null);
+    setOcrPreview("");
+    setUnsupportedPdfOcr(null);
+    setFileStatus("已删除本次识别结果，可以重新选择文件识别。");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function addPreviewWord() {
+    const word = manualPreviewWord.trim();
+    if (!word) return;
+    setFilePreview((current) => {
+      const item = makePreviewItem(word);
+      return current
+        ? { ...current, items: [...current.items, item] }
+        : { fileName: "手动添加", mode: extractMode, rawTextPreview: "", items: [item] };
+    });
+    setManualPreviewWord("");
+  }
+
+  function confirmFilePreview() {
+    if (!filePreview) return;
+    const words = filePreview.items.filter((item) => item.selected).map((item) => item.word.trim()).filter(Boolean);
+    setInput((current) => mergeInput(current, words.join("\n")));
+    setFileStatus(`已确认 ${words.length} 个词条，已加入下方待上传词表。`);
+    setFilePreview(null);
+  }
+
   async function handleImageFile(file?: File) {
     if (!file) return;
+    setUnsupportedPdfOcr(null);
+    setFilePreview(null);
     if (!file.type.startsWith("image/")) {
       setImageStatus("请选择图片文件。");
       return;
@@ -217,6 +318,89 @@ export default function Home() {
     if (!window.confirm(`确定删除选中的 ${selectedWordIds.length} 个词吗？相关词卡、掌握度和错误记录都会一起删除。`)) return;
     store.deleteWords(selectedWordIds);
     setSelectedWordIds([]);
+  }
+
+  function selectAllLibraryWords() {
+    setSelectedWordIds(store.words.map((word) => word.id));
+  }
+
+  function selectWordsWithoutCards() {
+    setSelectedWordIds(store.words.filter((word) => !word.card).map((word) => word.id));
+  }
+
+  async function handleBatchGenerateCards(failuresOnly = false) {
+    const selected = failuresOnly
+      ? batchFailures.map((failure) => store.words.find((word) => word.id === failure.wordId)).filter(Boolean) as typeof store.words
+      : store.words.filter((word) => selectedWordIds.includes(word.id));
+    if (selected.length === 0 || batchGenerating) return;
+    if (!failuresOnly) {
+      const message =
+        `确定要为选中的 ${selected.length} 个单词生成词卡吗？这会消耗你的 AI API 额度。建议先少量生成测试效果。` +
+        (selected.length > 50 ? "\n\n本次选择超过 50 个，建议分批操作。" : "");
+      if (!window.confirm(message)) return;
+    }
+
+    setBatchGenerating(true);
+    setBatchFailures([]);
+    setFailedWordIds([]);
+    const failed: BatchFailure[] = [];
+    const queue = batchOverwrite ? selected : selected.filter((word) => !word.card);
+    const skipped = selected.length - queue.length;
+    setBatchProgress({ total: queue.length, done: 0, success: 0, failed: 0, skipped, current: "" });
+
+    for (let index = 0; index < queue.length; index += 1) {
+      const word = queue[index];
+      setGeneratingWordIds((current) => [...new Set([...current, word.id])]);
+      setBatchProgress((current) => current ? { ...current, current: word.word } : current);
+      const result = await generateSingleCard(word);
+      setGeneratingWordIds((current) => current.filter((id) => id !== word.id));
+      if (result.ok) {
+        store.attachCard(word.id, result.card);
+        store.bumpStats("card", result.inputTokens, result.outputTokens);
+        setBatchProgress((current) => current ? { ...current, done: current.done + 1, success: current.success + 1 } : current);
+      } else {
+        const failure = { wordId: word.id, word: word.word, error: result.error };
+        failed.push(failure);
+        setFailedWordIds((current) => [...new Set([...current, word.id])]);
+        setBatchFailures([...failed]);
+        setBatchProgress((current) => current ? { ...current, done: current.done + 1, failed: current.failed + 1 } : current);
+      }
+      await delay(450);
+    }
+    setBatchProgress((current) => current ? { ...current, current: "" } : current);
+    setBatchGenerating(false);
+  }
+
+  async function generateSingleCard(word: ReturnType<typeof useLocalStudyStore>["words"][number], attempt = 0): Promise<
+    | { ok: true; card: WordCard; inputTokens?: number; outputTokens?: number }
+    | { ok: false; error: string }
+  > {
+    try {
+      const response = await fetch("/api/ai/generate-card", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ word: word.word })
+      });
+      const json = await response.json();
+      if (!response.ok) {
+        if (response.status === 429 && attempt < 1) {
+          await delay(1600);
+          return generateSingleCard(word, attempt + 1);
+        }
+        return { ok: false, error: json.error ?? "词卡生成失败。" };
+      }
+      if (!json.data?.examples || !Array.isArray(json.data.examples)) {
+        return { ok: false, error: "AI 返回的词卡格式不完整。" };
+      }
+      return {
+        ok: true,
+        card: buildWordCard(word.id, json.data, json.meta?.mocked),
+        inputTokens: json.meta?.inputTokens,
+        outputTokens: json.meta?.outputTokens
+      };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "词卡生成失败。" };
+    }
   }
 
   return (
@@ -319,13 +503,53 @@ export default function Home() {
                       <p className="text-sm text-black/55">支持 .txt / .csv / .md / .docx / 可复制文字 PDF</p>
                     </div>
                   </div>
-                    <input
+                  <div className="mt-4">
+                    <label className="text-sm">
+                      <span className="font-medium">提取模式</span>
+                      <select
+                        value={extractMode}
+                        onChange={(event) => setExtractMode(event.target.value as ExtractMode)}
+                        className="focus-ring mt-2 w-full rounded-md border border-black/15 bg-paper px-3 py-2"
+                      >
+                        <option value="smart">智能词表解析，推荐</option>
+                        <option value="fulltext">全文模式</option>
+                      </select>
+                    </label>
+                  </div>
+                  <p className="mt-3 text-xs leading-5 text-black/50">
+                    智能词表解析会优先识别“单词 + 中文释义”的词条，CSV/表格会自动找英文词列；只有全文模式才会从文章里提取所有英文词。
+                  </p>
+                  <input
+                    ref={fileInputRef}
                     type="file"
                     accept=".txt,.csv,.md,.docx,.pdf,text/plain,text/csv,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    onChange={(event) => handleTextFile(event.target.files?.[0])}
+                    onChange={(event) => {
+                      void handleTextFile(event.target.files?.[0]);
+                      event.currentTarget.value = "";
+                    }}
                     className="mt-4 block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-paper file:px-3 file:py-2 file:text-sm file:font-medium"
                   />
                   {fileStatus ? <p className="mt-3 text-sm text-mint">{fileStatus}</p> : null}
+                  {unsupportedPdfOcr ? (
+                    <div className="mt-4 rounded-md border border-black/10 bg-paper p-3">
+                      <p className="text-sm leading-6 text-black/70">{unsupportedPdfOcr.message}</p>
+                      <p className="mt-2 text-xs text-black/50">
+                        当前推荐上传 Word、txt、csv 或可复制文字 PDF；扫描版 PDF / 图片识别可能不准确，暂不推荐用于词表导入。
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUnsupportedPdfOcr(null);
+                            setFileStatus("");
+                          }}
+                          className="focus-ring rounded-md border border-black/10 px-3 py-2 text-sm font-medium disabled:opacity-60"
+                        >
+                          知道了
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                 </label>
 
                 <section className="surface block rounded-lg p-5">
@@ -341,10 +565,14 @@ export default function Home() {
                   <label className={`focus-ring mt-4 inline-flex cursor-pointer items-center gap-2 rounded-md bg-ink px-4 py-2 text-sm font-medium text-white ${imageLoading ? "pointer-events-none opacity-60" : ""}`}>
                     开始识别图片文字
                     <input
+                      ref={imageInputRef}
                       type="file"
                       accept="image/*"
                       disabled={imageLoading}
-                      onChange={(event) => handleImageFile(event.target.files?.[0])}
+                      onChange={(event) => {
+                        void handleImageFile(event.target.files?.[0]);
+                        event.currentTarget.value = "";
+                      }}
                       className="sr-only"
                     />
                   </label>
@@ -352,6 +580,81 @@ export default function Home() {
                 </section>
 
               </div>
+
+              {filePreview ? (
+                <section className="surface mt-4 rounded-lg p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h2 className="font-semibold">识别结果预览</h2>
+                      <p className="mt-1 text-sm text-black/55">
+                        {filePreview.fileName} · {modeLabel(filePreview.mode)} · {filePreview.items.length} 个词条
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" onClick={() => setAllPreviewItems(true)} className="focus-ring rounded-md border border-black/10 px-3 py-2 text-sm">
+                        全选
+                      </button>
+                      <button type="button" onClick={() => setAllPreviewItems(false)} className="focus-ring rounded-md border border-black/10 px-3 py-2 text-sm">
+                        取消全选
+                      </button>
+                      <button type="button" onClick={deleteSelectedPreviewItems} className="focus-ring rounded-md border border-black/10 px-3 py-2 text-sm text-coral">
+                        批量删除
+                      </button>
+                      <button type="button" onClick={clearFilePreview} className="focus-ring rounded-md border border-black/10 px-3 py-2 text-sm text-coral">
+                        删除本次识别结果
+                      </button>
+                    </div>
+                  </div>
+
+                  {filePreview.rawTextPreview ? (
+                    <details className="mt-4 rounded-md bg-paper p-3 text-sm">
+                      <summary className="cursor-pointer font-medium">文本预览</summary>
+                      <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap text-xs leading-5 text-black/65">{filePreview.rawTextPreview}</pre>
+                    </details>
+                  ) : null}
+
+                  <div className="mt-4 grid max-h-80 gap-2 overflow-auto pr-1">
+                    {filePreview.items.map((item) => (
+                      <div key={item.id} className="grid grid-cols-[24px_minmax(0,1fr)_44px] items-center gap-2 rounded-md bg-paper px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={item.selected}
+                          onChange={() => togglePreviewItem(item.id)}
+                          aria-label={`选择 ${item.word}`}
+                        />
+                        <input
+                          value={item.word}
+                          onChange={(event) => updatePreviewWord(item.id, event.target.value)}
+                          className="focus-ring w-full rounded-md border border-black/10 bg-white px-2 py-1 text-sm"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => deletePreviewItem(item.id)}
+                          className="focus-ring grid h-8 w-8 place-items-center rounded-md text-coral hover:bg-coral/10"
+                          aria-label={`删除 ${item.word}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <input
+                      value={manualPreviewWord}
+                      onChange={(event) => setManualPreviewWord(event.target.value)}
+                      placeholder="手动添加遗漏的词"
+                      className="focus-ring min-w-64 flex-1 rounded-md border border-black/15 bg-paper px-3 py-2 text-sm"
+                    />
+                    <button type="button" onClick={addPreviewWord} className="focus-ring rounded-md border border-black/10 px-3 py-2 text-sm">
+                      添加
+                    </button>
+                    <button type="button" onClick={confirmFilePreview} className="focus-ring rounded-md bg-ink px-4 py-2 text-sm font-medium text-white">
+                      确认加入待上传词表
+                    </button>
+                  </div>
+                </section>
+              ) : null}
 
               <div className="surface mt-4 rounded-lg p-5">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -372,7 +675,7 @@ export default function Home() {
                   </details>
                 ) : null}
                 <div className="mt-4 flex flex-wrap items-center gap-3">
-                  <button type="button" onClick={handleUpload} className="focus-ring rounded-md bg-ink px-4 py-2 text-sm font-medium text-white">
+                  <button type="button" onClick={() => void handleUpload()} className="focus-ring rounded-md bg-ink px-4 py-2 text-sm font-medium text-white">
                     上传并进入今日任务
                   </button>
                   {uploadResult ? <p className="text-sm text-mint">{uploadResult}</p> : null}
@@ -410,35 +713,103 @@ export default function Home() {
           ) : null}
 
           {tab === "output" ? (
-            <PageShell title="AI 输出训练" subtitle="严格模式：AI 生成中文句子，你用今日目标词翻译成英文，再由 AI 批改。">
-              <OutputTrainer words={store.todayWords} onUpdate={store.updateWord} onStats={(i, o) => store.bumpStats("grade", i, o)} />
+            <PageShell title="AI 翻译训练" subtitle="围绕今日词生成中译英或英译中题目，提交后由 AI 批改并给建议。">
+              <div className="space-y-4">
+                <OutputTrainer words={store.words} todayWords={store.todayWords} onUpdate={store.updateWord} onStats={(i, o) => store.bumpStats("grade", i, o)} />
+                <ReadingTranslationTrainer words={store.todayWords} onStats={(i, o) => store.bumpStats("grade", i, o)} />
+              </div>
             </PageShell>
           ) : null}
 
           {tab === "library" ? (
             <PageShell title="词库" subtitle="查看掌握度、复习时间和最近错误。">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                <p className="text-sm text-black/55">已选择 {selectedWordIds.length} 个词</p>
-                <button
-                  type="button"
-                  onClick={handleBatchDelete}
-                  disabled={selectedWordIds.length === 0}
-                  className="focus-ring rounded-md border border-black/10 bg-white px-3 py-2 text-sm font-medium text-coral disabled:opacity-50"
-                >
-                  批量删除
-                </button>
+              <div className="surface mb-3 rounded-lg p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-sm text-black/55">已选择 {selectedWordIds.length} 个词</p>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={selectAllLibraryWords} className="focus-ring rounded-md border border-black/10 bg-white px-3 py-2 text-sm">
+                      全选
+                    </button>
+                    <button type="button" onClick={() => setSelectedWordIds([])} className="focus-ring rounded-md border border-black/10 bg-white px-3 py-2 text-sm">
+                      取消全选
+                    </button>
+                    <button type="button" onClick={selectWordsWithoutCards} className="focus-ring rounded-md border border-black/10 bg-white px-3 py-2 text-sm">
+                      只选未生成词卡
+                    </button>
+                    <label className="inline-flex items-center gap-2 rounded-md border border-black/10 bg-white px-3 py-2 text-sm">
+                      <input type="checkbox" checked={batchOverwrite} onChange={(event) => setBatchOverwrite(event.target.checked)} />
+                      覆盖已有词卡
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void handleBatchGenerateCards(false)}
+                      disabled={selectedWordIds.length === 0 || batchGenerating}
+                      className="focus-ring rounded-md bg-ink px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                    >
+                      批量生成词卡
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleBatchDelete}
+                      disabled={selectedWordIds.length === 0 || batchGenerating}
+                      className="focus-ring rounded-md border border-black/10 bg-white px-3 py-2 text-sm font-medium text-coral disabled:opacity-50"
+                    >
+                      批量删除
+                    </button>
+                  </div>
+                </div>
+                {batchProgress ? (
+                  <div className="mt-4 rounded-md bg-paper p-3 text-sm">
+                    <div className="flex flex-wrap justify-between gap-2">
+                      <span>{batchProgress.current ? `正在生成词卡：${batchProgress.current}` : "批量生成完成"}</span>
+                      <span>进度：{batchProgress.done} / {batchProgress.total}</span>
+                    </div>
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-black/10">
+                      <div
+                        className="h-full bg-mint"
+                        style={{ width: `${batchProgress.total ? Math.round((batchProgress.done / batchProgress.total) * 100) : 100}%` }}
+                      />
+                    </div>
+                    <p className="mt-2 text-black/55">
+                      成功：{batchProgress.success} · 失败：{batchProgress.failed} · 已跳过已有词卡：{batchProgress.skipped}
+                    </p>
+                  </div>
+                ) : null}
+                {batchFailures.length > 0 ? (
+                  <div className="mt-4 rounded-md border border-coral/20 bg-coral/5 p-3 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="font-medium text-coral">失败项</p>
+                      <button
+                        type="button"
+                        onClick={() => void handleBatchGenerateCards(true)}
+                        disabled={batchGenerating}
+                        className="focus-ring rounded-md border border-black/10 bg-white px-3 py-2 text-sm disabled:opacity-50"
+                      >
+                        重试失败项
+                      </button>
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      {batchFailures.map((failure) => (
+                        <div key={failure.wordId} className="rounded-md bg-white px-3 py-2">
+                          <span className="font-medium">{failure.word}</span> · {failure.error}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
               <div className="surface overflow-hidden rounded-lg">
-                <div className="grid grid-cols-[32px_1.1fr_0.7fr_0.6fr_1fr_44px] gap-3 border-b border-black/10 px-4 py-3 text-xs font-semibold text-black/50">
+                <div className="grid grid-cols-[32px_1.1fr_0.7fr_0.6fr_0.8fr_1fr_44px] gap-3 border-b border-black/10 px-4 py-3 text-xs font-semibold text-black/50">
                   <span />
                   <span>单词</span>
                   <span>掌握度</span>
                   <span>等级</span>
+                  <span>词卡</span>
                   <span>下次复习</span>
                   <span>操作</span>
                 </div>
                 {[...store.words].sort((a, b) => duePriority(a) - duePriority(b)).map((word) => (
-                  <div key={word.id} className="grid grid-cols-[32px_1.1fr_0.7fr_0.6fr_1fr_44px] items-center gap-3 border-b border-black/5 px-4 py-3 text-sm">
+                  <div key={word.id} className="grid grid-cols-[32px_1.1fr_0.7fr_0.6fr_0.8fr_1fr_44px] items-center gap-3 border-b border-black/5 px-4 py-3 text-sm">
                     <input
                       type="checkbox"
                       checked={selectedWordIds.includes(word.id)}
@@ -448,6 +819,11 @@ export default function Home() {
                     <span className="font-medium">{word.word}</span>
                     <span>{word.masteryScore}</span>
                     <span>{word.level}</span>
+                    <CardStatus
+                      generated={Boolean(word.card)}
+                      generating={generatingWordIds.includes(word.id)}
+                      failed={failedWordIds.includes(word.id)}
+                    />
                     <span className="truncate text-black/55">{word.nextReviewAt ? new Date(word.nextReviewAt).toLocaleString() : "现在"}</span>
                     <button
                       type="button"
@@ -636,6 +1012,20 @@ function normalizeExtractedWords(items: unknown): string[] {
     })
     .map((word) => word.trim())
     .filter(Boolean);
+}
+
+function makePreviewItem(word: string): FilePreviewItem {
+  const id = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return { id, word, selected: true };
+}
+
+function modeLabel(mode: ExtractMode) {
+  return {
+    smart: "智能词表解析",
+    fulltext: "全文模式"
+  }[mode];
 }
 
 function Metric({ icon, label, value }: { icon: ReactNode; label: string; value: number }) {
@@ -889,6 +1279,48 @@ function mergeInput(current: string, addition: string) {
   if (!trimmedAddition) return current;
   const trimmedCurrent = current.trim();
   return trimmedCurrent ? `${trimmedCurrent}\n${trimmedAddition}` : trimmedAddition;
+}
+
+function buildWordCard(wordId: string, data: WordCard, mocked?: boolean): WordCard {
+  const now = new Date().toISOString();
+  return {
+    ...data,
+    id: crypto.randomUUID(),
+    wordId,
+    examples: data.examples.map((entry) => ({
+      ...entry,
+      id: crypto.randomUUID(),
+      wordId,
+      source: entry.source ?? (mocked ? "mock" : "ai"),
+      createdAt: now
+    })),
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function CardStatus({
+  generated,
+  generating,
+  failed
+}: {
+  generated: boolean;
+  generating: boolean;
+  failed: boolean;
+}) {
+  const label = generating ? "生成中" : failed ? "失败" : generated ? "已生成" : "暂无词卡";
+  const className = generating
+    ? "bg-mint/10 text-mint"
+    : failed
+      ? "bg-coral/10 text-coral"
+      : generated
+        ? "bg-ink/10 text-ink"
+        : "bg-black/5 text-black/50";
+  return <span className={`w-fit rounded-md px-2 py-1 text-xs ${className}`}>{label}</span>;
 }
 
 function readFileAsDataUrl(file: File) {

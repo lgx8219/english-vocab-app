@@ -7,12 +7,15 @@ export const wordCardSchema = z.object({
   meanings: z.array(
     z.object({
       partOfSpeech: z.string(),
-      meaningCn: z.string()
+      meaningCn: z.string(),
+      meaningEn: z.string().optional(),
+      usage: z.string().optional()
     })
   ),
   derivedWords: z.array(
     z.object({
       word: z.string(),
+      pos: z.string().optional(),
       meaningCn: z.string()
     })
   ),
@@ -42,6 +45,7 @@ export const wordCardSchema = z.object({
       warning: z.string().nullable()
     })
     .nullable(),
+  notes: z.string().optional(),
   examples: z.array(
     z.object({
       sentence: z.string(),
@@ -53,10 +57,42 @@ export const wordCardSchema = z.object({
 });
 
 export const outputPromptSchema = z.object({
-  chinese: z.string(),
+  promptCn: z.string(),
+  chinese: z.string().optional(),
   targetWords: z.array(z.string()),
-  difficulty: z.enum(["easy", "medium", "hard"]),
-  mode: z.literal("strict")
+  difficulty: z.enum(["daily", "postgraduate", "ielts"]),
+  mode: z.literal("strict"),
+  expectedUsage: z.array(
+    z.object({
+      word: z.string(),
+      meaningHintCn: z.string()
+    })
+  )
+});
+
+export const readingPromptSchema = z.object({
+  title: z.string(),
+  passage: z.string(),
+  targetWords: z.array(z.string()),
+  difficulty: z.enum(["easy", "medium", "hard"])
+});
+
+export const translationGradeSchema = z.object({
+  score: z.number(),
+  is_passed: z.boolean(),
+  overall_feedback: z.string(),
+  target_word_results: z.array(
+    z.object({
+      word: z.string(),
+      meaning_in_context: z.string(),
+      user_translation_status: z.enum(["correct", "missing", "incorrect", "partial"]),
+      comment: z.string()
+    })
+  ),
+  missing_meanings: z.array(z.string()),
+  serious_errors: z.array(z.string()),
+  improved_translation: z.string(),
+  review_suggestions: z.array(z.string())
 });
 
 export const outputGradeSchema = z.object({

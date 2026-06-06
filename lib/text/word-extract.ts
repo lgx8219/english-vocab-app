@@ -44,6 +44,13 @@ export function isUsableExtractedText(text: string) {
   return words.length >= 3 && printableRatio > 0.65;
 }
 
+export function isLikelyEnglishTerm(term: string) {
+  const words = term.split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.length > 5) return false;
+  if (term.length < 2 || term.length > 60) return false;
+  return words.every(isLikelyEnglishWord);
+}
+
 function isLikelyEnglishWord(word: string) {
   if (word.length < 2 || word.length > 32) return false;
   if (ignoredWords.has(word)) return false;

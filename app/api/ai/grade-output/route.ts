@@ -14,6 +14,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "chinese, userEnglish and targetWords are required" }, { status: 400 });
   }
 
-  const result = await gradeOutput({ chinese, userEnglish, targetWords, config });
-  return NextResponse.json(result);
+  try {
+    const result = await gradeOutput({ chinese, userEnglish, targetWords, config });
+    return NextResponse.json(result);
+  } catch {
+    return NextResponse.json({ error: "批改失败，请重试。" }, { status: 502 });
+  }
 }

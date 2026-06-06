@@ -1,7 +1,8 @@
 import { inflateRawSync } from "zlib";
 import { NextResponse } from "next/server";
 import { requireAllowedUser } from "@/lib/auth/api";
-import { extractEnglishWords, isUsableExtractedText } from "@/lib/text/word-extract";
+import { parseTermsFromText, type ExtractMode } from "@/lib/text/list-parser";
+import { isUsableExtractedText } from "@/lib/text/word-extract";
 
 const maxFileBytes = 8 * 1024 * 1024;
 
@@ -9,7 +10,7 @@ export async function POST(request: Request) {
   const auth = await requireAllowedUser();
   if (auth.response) return auth.response;
 
-  const { fileName, mimeType, base64 } = await request.json();
+  const { fileName, mimeType, base64, mode } = await request.json();
   if (!base64 || typeof base64 !== "string") {
     return NextResponse.json({ error: "base64 is required" }, { status: 400 });
   }
@@ -25,7 +26,7 @@ export async function POST(request: Request) {
 
   if (type.startsWith("image/") || /\.(jpe?g|png|webp)$/i.test(name)) {
     return NextResponse.json(
-      { needsOcr: true, error: "图片文件需要使用 OCR 识别，不能当作普通文本解析。" },
+      { error: "当前建议上传 Word、txt、csv 或可复制文字 PDF。扫描版 PDF / 图片识别可能不准确，暂不推荐用于词表导入。" },
       { status: 400 }
     );
   }
@@ -36,20 +37,35 @@ export async function POST(request: Request) {
     text = extractPdfText(buffer);
     if (!isUsableExtractedText(text)) {
       return NextResponse.json({
+        success: false,
         needsOcr: true,
+        requiresOcr: true,
+        fileType: "pdf",
         words: [],
         rawTextPreview: "",
-        message: "这个 PDF 没有可复制文字，可能是扫描版。是否使用 OCR 识别？这会消耗 AI 额度。",
+        message: "这个 PDF 可能是扫描版，目前不建议直接导入。请上传 Word、txt、csv，或者使用可复制文字 PDF。",
         ocrSupported: false,
-        error: "扫描版 PDF OCR 第一版暂不支持自动转图片。请先拆分或截图为图片后上传 OCR。"
+        error: "这个 PDF 可能是扫描版，目前不建议直接导入。请上传 Word、txt、csv，或者使用可复制文字 PDF。"
       });
     }
   } else {
     text = buffer.toString("utf8");
   }
 
-  const words = extractEnglishWords(text);
-  return NextResponse.json({ words, rawTextLength: text.length, rawTextPreview: text.slice(0, 800) });
+  const extractMode = normalizeMode(mode, name);
+  const words = parseTermsFromText(text, extractMode);
+  return NextResponse.json({
+    success: true,
+    mode: extractMode,
+    words,
+    rawTextLength: text.length,
+    rawTextPreview: text.slice(0, 1200)
+  });
+}
+
+function normalizeMode(mode: unknown, fileName: string): ExtractMode {
+  if (mode === "smart" || mode === "vocab" || mode === "table" || mode === "fulltext") return mode;
+  return fileName.endsWith(".csv") ? "smart" : "smart";
 }
 
 function extractDocxText(buffer: Buffer) {

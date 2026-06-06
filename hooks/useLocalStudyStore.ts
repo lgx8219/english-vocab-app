@@ -3,6 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import type { AISettings, StudyWord, TokenStats, WordCard } from "@/lib/types";
 import { createStudyWord, parseWordInput } from "@/lib/study";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import {
+  deleteWordsFromSupabase,
+  loadStudyWordsFromSupabase,
+  upsertWordCardToSupabase,
+  upsertWordsToSupabase
+} from "@/lib/supabase/study-sync";
 
 const WORDS_KEY = "vocab-ai-study.words";
 const SETTINGS_KEY = "vocab-ai-study.settings";
@@ -67,6 +74,8 @@ export function useLocalStudyStore() {
   const [stats, setStats] = useState<TokenStats>(defaultStats);
   const [theme, setThemeState] = useState<ThemeMode>("system");
   const [hydrated, setHydrated] = useState(false);
+  const [remoteUserId, setRemoteUserId] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<"idle" | "loading" | "synced" | "local" | "error">("idle");
 
   useEffect(() => {
     setWords(readJson(WORDS_KEY, []));
@@ -75,6 +84,11 @@ export function useLocalStudyStore() {
     setThemeState(readJson(THEME_KEY, "system"));
     setHydrated(true);
   }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    void refreshFromSupabase();
+  }, [hydrated]);
 
   useEffect(() => {
     if (hydrated) writeJson(WORDS_KEY, words);
@@ -125,46 +139,76 @@ export function useLocalStudyStore() {
       .slice(0, 30);
   }, [words]);
 
-  function upload(input: string) {
+  async function refreshFromSupabase() {
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) {
+      setSyncStatus("local");
+      return;
+    }
+    const { data } = await supabase.auth.getUser();
+    if (!data.user) {
+      setSyncStatus("local");
+      return;
+    }
+    setRemoteUserId(data.user.id);
+    setSyncStatus("loading");
+    try {
+      const remoteWords = await loadStudyWordsFromSupabase(supabase, data.user.id);
+      setWords(remoteWords);
+      writeJson(WORDS_KEY, remoteWords);
+      setSyncStatus("synced");
+    } catch {
+      setSyncStatus("error");
+    }
+  }
+
+  async function upload(input: string) {
     const parsed = parseWordInput(input);
     let added = 0;
     let reused = 0;
-    setWords((current) => {
-      const byNormalized = new Map(current.map((item) => [item.normalizedWord, item]));
-      for (const item of parsed) {
-        const existing = byNormalized.get(item.normalizedWord);
-        if (existing) {
-          reused += 1;
-          byNormalized.set(item.normalizedWord, {
-            ...existing,
-            userMeaning: item.userMeaning || existing.userMeaning,
-            nextReviewAt: existing.masteryScore >= 85 ? existing.nextReviewAt : new Date().toISOString()
-          });
-        } else {
-          added += 1;
-          byNormalized.set(item.normalizedWord, createStudyWord(item.word, item.userMeaning));
-        }
+    const byNormalized = new Map(words.map((item) => [item.normalizedWord, item]));
+    for (const item of parsed) {
+      const existing = byNormalized.get(item.normalizedWord);
+      if (existing) {
+        reused += 1;
+        byNormalized.set(item.normalizedWord, {
+          ...existing,
+          userMeaning: item.userMeaning || existing.userMeaning,
+          nextReviewAt: existing.masteryScore >= 85 ? existing.nextReviewAt : new Date().toISOString()
+        });
+      } else {
+        added += 1;
+        byNormalized.set(item.normalizedWord, createStudyWord(item.word, item.userMeaning));
       }
-      return Array.from(byNormalized.values());
-    });
+    }
+    const nextWords = Array.from(byNormalized.values());
+    setWords(nextWords);
+    await persistWords(nextWords);
+    await refreshFromSupabase();
     return { total: parsed.length, added, reused };
   }
 
   function attachCard(wordId: string, card: WordCard) {
-    setWords((current) => current.map((item) => (item.id === wordId ? { ...item, card, updatedAt: new Date().toISOString() } : item)));
+    const existing = words.find((item) => item.id === wordId);
+    const target = existing ? { ...existing, card, updatedAt: new Date().toISOString() } : undefined;
+    setWords((current) => current.map((item) => (item.id === wordId && target ? target : item)));
+    if (target) void persistCard(target, card);
   }
 
   function updateWord(next: StudyWord) {
     setWords((current) => current.map((item) => (item.id === next.id ? next : item)));
+    void persistWords([next]);
   }
 
   function deleteWord(wordId: string) {
     setWords((current) => current.filter((item) => item.id !== wordId));
+    void deleteRemoteWords([wordId]);
   }
 
   function deleteWords(wordIds: string[]) {
     const ids = new Set(wordIds);
     setWords((current) => current.filter((item) => !ids.has(item.id)));
+    void deleteRemoteWords(wordIds);
   }
 
   function bumpStats(kind: "card" | "example" | "image" | "grade" | "chat", inputTokens = 0, outputTokens = 0) {
@@ -244,9 +288,12 @@ export function useLocalStudyStore() {
         status: "unknown"
       });
       setStats(backup.stats);
+      void persistWords(backup.words);
+      void Promise.all(backup.words.map((word) => word.card ? persistCard(word, word.card) : Promise.resolve()));
       return { added: backup.words.length, updated: 0, total: backup.words.length, mode };
     }
 
+    let nextWords: StudyWord[] = [];
     setWords((current) => {
       const byNormalized = new Map(current.map((item) => [item.normalizedWord, item]));
 
@@ -262,8 +309,11 @@ export function useLocalStudyStore() {
         byNormalized.set(incoming.normalizedWord, mergeStudyWord(existing, incoming));
       }
 
-      return Array.from(byNormalized.values());
+      nextWords = Array.from(byNormalized.values());
+      return nextWords;
     });
+    void persistWords(nextWords);
+    void Promise.all(nextWords.map((word) => word.card ? persistCard(word, word.card) : Promise.resolve()));
 
     setSettings((current) => ({
       ...current,
@@ -288,6 +338,7 @@ export function useLocalStudyStore() {
 
   return {
     hydrated,
+    syncStatus,
     words,
     todayWords,
     settings,
@@ -305,6 +356,42 @@ export function useLocalStudyStore() {
     exportData,
     importData
   };
+
+  async function persistWords(nextWords: StudyWord[]) {
+    const supabase = getSupabaseBrowserClient();
+    const userId = remoteUserId;
+    if (!supabase || !userId || nextWords.length === 0) return;
+    try {
+      await upsertWordsToSupabase(supabase, userId, nextWords);
+      setSyncStatus("synced");
+    } catch {
+      setSyncStatus("error");
+    }
+  }
+
+  async function persistCard(word: StudyWord, card: WordCard) {
+    const supabase = getSupabaseBrowserClient();
+    const userId = remoteUserId;
+    if (!supabase || !userId) return;
+    try {
+      await upsertWordCardToSupabase(supabase, userId, word, card);
+      setSyncStatus("synced");
+    } catch {
+      setSyncStatus("error");
+    }
+  }
+
+  async function deleteRemoteWords(wordIds: string[]) {
+    const supabase = getSupabaseBrowserClient();
+    const userId = remoteUserId;
+    if (!supabase || !userId || wordIds.length === 0) return;
+    try {
+      await deleteWordsFromSupabase(supabase, userId, wordIds);
+      setSyncStatus("synced");
+    } catch {
+      setSyncStatus("error");
+    }
+  }
 }
 
 function readJson<T>(key: string, fallback: T): T {
